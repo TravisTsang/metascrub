@@ -134,16 +134,6 @@ The GUI is backed by the same JSON API (useful for scripts):
 | GET | `/api/jobs/{id}/download` | Download a scrubbed output |
 | GET | `/api/report` | Stats plus all indexed files (JSON) |
 
-### Hosting it on the web
-
-GitHub Pages only serves static files, so it cannot run this project: scrubbing
-runs ExifTool on a Python backend and GitHub Pages has no server or Python
-runtime. Free options that *can* run the backend are Docker-capable hosts such as
-Hugging Face Spaces, Render, Fly.io, or Railway. Keep in mind that any hosted
-version means your photos are uploaded to someone else's server, so a local
-`metascrub gui` is the most private option. If you only need the static front end
-elsewhere, the `POST /api/scrub-upload` endpoint must still be reachable over the
-network.
 
 ## What gets removed
 
@@ -182,21 +172,10 @@ SQLite is created with mode `0600` because it contains extracted PII. Tables:
 
 Useful views: `file_pii_summary`, `file_pii_totals`.
 
-## Safety notes
+## Other notes
 
 - Originals are never modified; output goes to the directory passed with `--out`.
 - The tool removes embedded metadata only. It does not detect faces, text rendered
   into pixels, or PII in filenames/directory names.
 - Protect `metascrub.db`: it is a PII inventory by design.
 - RAW scrubbing is opt-in and may make files unreadable by some software.
-
-## Tests
-
-```bash
-.venv/bin/python -m pytest -q
-```
-
-The suite covers format detection, ExifTool extraction, PII classification,
-SQLite persistence, scrubbing/verification, every HTTP endpoint (including error
-and path-traversal cases), the CLI, and a full scan → scrub → re-scan end-to-end
-run across all supported formats.
