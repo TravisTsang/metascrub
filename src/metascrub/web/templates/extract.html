@@ -1,0 +1,261 @@
+{% extends "base.html" %}
+{% block title %}Extract metadata - metascrub{% endblock %}
+{% block content %}
+<h1>Extract metadata</h1>
+<p class="muted">
+  Drop an image to inspect embedded metadata fields.
+</p>
+
+<div id="extract-dropzone" class="dropzone" tabindex="0" role="button"
+     aria-label="Upload an image to extract metadata">
+  <strong>Drop an image here</strong><br>
+  <span>or click to choose a file</span>
+  <input type="file" id="extract-file-input" multiple hidden
+         accept=".jpg,.jpeg,.png,.tif,.tiff,.webp,.heic,.heif,.avif,.gif,.bmp,.svg,.dng,.cr2,.cr3,.nef,.arw,.raf,.orf,.rw2,.pef,.srw,.3fr,.iiq,.x3f">
+</div>
+
+<div id="extract-status" class="message"></div>
+<div id="extract-results" class="results"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const zone = document.getElementById("extract-dropzone");
+  const input = document.getElementById("extract-file-input");
+  const status = document.getElementById("extract-status");
+  const results = document.getElementById("extract-results");
+
+  function setStatus(text, kind) {
+    status.textContent = text;
+    status.className = "message " + (kind || "");
+  }
+
+  function badge(text, kind) {
+    const span = document.createElement("span");
+    span.className = "badge " + (kind || "");
+    span.textContent = text;
+    return span;
+  }
+
+  function muted(text) {
+    const span = document.createElement("span");
+    span.className = "muted";
+    span.textContent = text;
+    return span;
+  }
+
+  function formatBytes(value) {
+    if (value === null || value === undefined) return "unknown size";
+    const units = ["B", "KB", "MB", "GB"];
+    let size = value;
+    let index = 0;
+    while (size >= 1024 && index < units.length - 1) {
+      size /= 1024;
+      index += 1;
+    }
+    return (index === 0 ? size : size.toFixed(1)) + " " + units[index];
+  }
+
+  function dimensions(result) {
+    if (!result.width || !result.height) return "unknown dimensions";
+    return result.width + " x " + result.height;
+  }
+
+
+  function cell(text, className) {
+    const td = document.createElement("td");
+    if (className) td.className = className;
+    td.textContent = text === null || text === undefined || text === "" ? "-" : text;
+    return td;
+  }
+
+  function renderTable(fields) {
+    const wrap = document.createElement("div");
+    wrap.className = "meta-table-wrap";
+    const table = document.createElement("table");
+    table.className = "metadata";
+
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    for (const label of ["Group", "Tag", "Value", "PII"]) {
+      const th = document.createElement("th");
+      th.textContent = label;
+      headRow.appendChild(th);
+    }
+    head.appendChild(headRow);
+    table.appendChild(head);
+
+    const body = document.createElement("tbody");
+    for (const field of fields) {
+      const row = document.createElement("tr");
+      if (field.is_pii) row.className = "pii";
+      row.appendChild(cell(field.group));
+      row.appendChild(cell(field.tag));
+      row.appendChild(cell(field.value, "value"));
+      const pii = document.createElement("td");
+      if (field.is_pii) {
+        pii.appendChild(badge(field.category_label || field.category || "PII", "bad"));
+      } else {
+        pii.textContent = "-";
+      }
+      row.appendChild(pii);
+      body.appendChild(row);
+    }
+    table.appendChild(body);
+    wrap.appendChild(table);
+    return wrap;
+  }
+
+  function renderResult(result) {
+    const card = document.createElement("div");
+    card.className = "result";
+
+    const title = document.createElement("h2");
+    title.textContent = result.name;
+    card.appendChild(title);
+
+    const grid = document.createElement("div");
+    grid.className = "result-grid";
+
+    const left = document.createElement("div");
+    if (result.preview_url) {
+      const image = document.createElement("img");
+      image.src = result.preview_url;
+      image.alt = result.name;
+      image.addEventListener("error", () => {
+        const placeholder = document.createElement("div");
+        placeholder.className = "placeholder";
+        placeholder.textContent = "Preview not available in this browser.";
+        image.replaceWith(placeholder);
+      });
+      left.appendChild(image);
+    } else {
+      const placeholder = document.createElement("div");
+      placeholder.className = "placeholder";
+      placeholder.textContent = "No preview available.";
+      left.appendChild(placeholder);
+    }
+    grid.appendChild(left);
+
+    const side = document.createElement("aside");
+    side.className = "side";
+    const details = document.createElement("h3");
+    details.textContent = "File details";
+    side.appendChild(details);
+
+    const summary = document.createElement("div");
+    summary.className = "summary-line";
+    summary.appendChild(badge(result.type || "UNKNOWN"));
+    summary.appendChild(muted(dimensions(result)));
+    summary.appendChild(muted(formatBytes(result.size_bytes)));
+    side.appendChild(summary);
+
+    const piiSummary = document.createElement("p");
+    piiSummary.className = "muted";
+    piiSummary.style.margin = "10px 0 0";
+    piiSummary.textContent = "PII fields: " + (result.pii_count || 0);
+    if (result.captured_at) {
+      piiSummary.textContent += " | Captured: " + result.captured_at;
+    }
+    side.appendChild(piiSummary);
+
+    if (result.pii_categories && result.pii_categories.length) {
+      const categories = document.createElement("div");
+      categories.className = "row";
+      categories.style.marginTop = "8px";
+      for (const item of result.pii_categories) {
+        categories.appendChild(badge(item.label || item.category, "warn"));
+      }
+      side.appendChild(categories);
+    }
+
+    if (result.status !== "success") {
+      const error = document.createElement("div");
+      error.className = "row";
+      error.style.marginTop = "10px";
+      error.appendChild(badge(result.status || "error", "bad"));
+      if (result.error) error.appendChild(muted(result.error));
+      side.appendChild(error);
+    }
+
+    if (result.warnings && result.warnings.length) {
+      const warnings = document.createElement("p");
+      warnings.className = "muted";
+      warnings.style.marginTop = "8px";
+      warnings.textContent = "Warnings: " + result.warnings.join("; ");
+      side.appendChild(warnings);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "row";
+    actions.style.marginTop = "12px";
+    const jsonUrl = URL.createObjectURL(
+      new Blob([JSON.stringify(result, null, 2)], {type: "application/json"})
+    );
+    const download = document.createElement("a");
+    download.className = "button alt";
+    download.href = jsonUrl;
+    download.download = result.name + ".metadata.json";
+    download.textContent = "Download JSON";
+    actions.appendChild(download);
+    side.appendChild(actions);
+    grid.appendChild(side);
+    card.appendChild(grid);
+
+    const heading = document.createElement("h3");
+    heading.className = "section-heading";
+    heading.textContent =
+      "Extracted metadata (" + (result.fields || []).length + " fields)";
+    card.appendChild(heading);
+
+    if (result.fields && result.fields.length) {
+      card.appendChild(renderTable(result.fields));
+    } else {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "No metadata fields were extracted.";
+      card.appendChild(empty);
+    }
+    return card;
+  }
+
+  async function upload(fileList) {
+    if (!fileList || !fileList.length) return;
+    const form = new FormData();
+    for (const file of fileList) form.append("files", file);
+    results.replaceChildren();
+    setStatus("Extracting metadata from " + fileList.length + " file(s)...", "ok");
+    try {
+      const response = await fetch("/api/extract-upload", {method: "POST", body: form});
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || response.statusText);
+      setStatus("Done. " + payload.results.length + " file(s) processed.", "ok");
+      for (const result of payload.results) results.appendChild(renderResult(result));
+    } catch (error) {
+      setStatus(error.message, "error");
+    }
+  }
+
+  zone.addEventListener("click", () => input.click());
+  zone.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      input.click();
+    }
+  });
+  ["dragenter", "dragover"].forEach((name) => {
+    zone.addEventListener(name, (event) => {
+      event.preventDefault();
+      zone.classList.add("dragover");
+    });
+  });
+  ["dragleave", "drop"].forEach((name) => {
+    zone.addEventListener(name, (event) => {
+      event.preventDefault();
+      zone.classList.remove("dragover");
+    });
+  });
+  zone.addEventListener("drop", (event) => upload(event.dataTransfer.files));
+  input.addEventListener("change", () => upload(input.files));
+</script>
+{% endblock %}

@@ -1,0 +1,13 @@
+.venv/
+.tools/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+metascrub.db
+metascrub.db-*
+scrubbed/
+uploads/
+dist/
+build/

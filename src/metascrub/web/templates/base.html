@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}metascrub{% endblock %}</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #11151c;
+      --panel: #1a2029;
+      --border: #2d3746;
+      --text: #e6edf3;
+      --muted: #9aa7b8;
+      --accent: #58a6ff;
+      --good: #3fb950;
+      --warn: #d29922;
+      --bad: #f85149;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+    }
+    main { padding: 32px 24px; max-width: 900px; margin: 0 auto; }
+    h1 { font-size: 22px; margin: 0 0 6px; }
+    .muted { color: var(--muted); }
+    .dropzone {
+      margin-top: 20px;
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 56px 20px;
+      text-align: center;
+      color: var(--muted);
+      cursor: pointer;
+      transition: border-color .15s, background .15s, color .15s;
+    }
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--accent);
+      background: rgba(88, 166, 255, .08);
+      color: var(--text);
+    }
+    .dropzone strong { color: var(--text); font-size: 16px; }
+    .message { margin: 16px 0; padding: 10px 12px; border-radius: 4px; display: none; }
+    .message.error { display: block; color: var(--bad); border: 1px solid var(--bad); }
+    .message.ok { display: block; color: var(--good); border: 1px solid var(--good); }
+    .results { display: grid; gap: 16px; margin-top: 20px; }
+    .result {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .result h2 { font-size: 15px; margin: 0 0 10px; }
+    .result-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+      gap: 18px;
+    }
+    .side {
+      border-left: 1px solid var(--border);
+      padding-left: 16px;
+      min-width: 0;
+    }
+    .side h3 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      color: var(--muted);
+      margin: 0 0 6px;
+    }
+    .side ul { margin: 0 0 14px 18px; padding: 0; }
+    .side li { margin: 3px 0; overflow-wrap: anywhere; }
+    .side .empty { color: var(--muted); margin: 0 0 14px; }
+    @media (max-width: 760px) {
+      .result-grid { grid-template-columns: 1fr; }
+      .side {
+        border-left: 0;
+        border-top: 1px solid var(--border);
+        padding-left: 0;
+        padding-top: 14px;
+      }
+    }
+    .result img {
+      max-width: 100%;
+      max-height: 320px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      display: block;
+      margin-bottom: 12px;
+      background: #0b0e13;
+    }
+    .placeholder {
+      padding: 32px;
+      text-align: center;
+      color: var(--muted);
+      border: 1px dashed var(--border);
+      border-radius: 6px;
+      margin-bottom: 12px;
+    }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+    .badge.ok { color: var(--good); border-color: var(--good); }
+    .badge.bad { color: var(--bad); border-color: var(--bad); }
+    .badge.warn { color: var(--warn); border-color: var(--warn); }
+    a.button, a.button:visited {
+      display: inline-block;
+      background: var(--accent);
+      color: #06101d;
+      text-decoration: none;
+      border-radius: 4px;
+      padding: 9px 16px;
+      font-weight: 700;
+    }
+    a.button.alt { background: var(--border); color: var(--text); }
+    .topnav {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      margin-bottom: 24px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .topnav .brand {
+      margin-right: auto;
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 16px;
+    }
+    .topnav a.navlink {
+      color: var(--muted);
+      text-decoration: none;
+      padding: 4px 0;
+      border-bottom: 2px solid transparent;
+    }
+    .topnav a.navlink:hover { color: var(--text); }
+    .topnav a.navlink.active {
+      color: var(--text);
+      border-bottom-color: var(--accent);
+    }
+    .meta-table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      margin-top: 12px;
+    }
+    table.metadata {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12.5px;
+    }
+    table.metadata th,
+    table.metadata td {
+      text-align: left;
+      padding: 7px 9px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    table.metadata th {
+      color: var(--muted);
+      font-weight: 600;
+      background: rgba(255, 255, 255, .02);
+      white-space: nowrap;
+    }
+    table.metadata tr:last-child td { border-bottom: 0; }
+    table.metadata tr.pii td { background: rgba(248, 81, 73, .06); }
+    table.metadata td.value {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      max-width: 460px;
+    }
+    .summary-line {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      color: var(--muted);
+    }
+    .section-heading {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      color: var(--muted);
+      margin: 18px 0 6px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <nav class="topnav" aria-label="Main">
+      <a class="brand" href="/">metascrub</a>
+      <a class="navlink{% if request.url.path == '/' %} active{% endif %}" href="/"{% if request.url.path == '/' %} aria-current="page"{% endif %}>Scrub</a>
+      <a class="navlink{% if request.url.path == '/extract' %} active{% endif %}" href="/extract"{% if request.url.path == '/extract' %} aria-current="page"{% endif %}>Extract</a>
+    </nav>
+    {% block content %}{% endblock %}
+  </main>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

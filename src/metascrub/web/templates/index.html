@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% block title %}Scrub images - metascrub{% endblock %}
+{% block content %}
+<h1>Scrub images</h1>
+<p class="muted">
+  Drop an image to remove its metadata.
+</p>
+
+<div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload an image">
+  <strong>Drop an image here</strong><br>
+  <span>or click to choose a file</span>
+  <input type="file" id="file-input" multiple hidden
+         accept=".jpg,.jpeg,.png,.tif,.tiff,.webp,.heic,.heif,.avif,.gif,.bmp,.svg,.dng,.cr2,.cr3,.nef,.arw,.raf,.orf,.rw2,.pef,.srw,.3fr,.iiq,.x3f">
+</div>
+
+<div id="status" class="message"></div>
+<div id="results" class="results"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const zone = document.getElementById("dropzone");
+  const input = document.getElementById("file-input");
+  const status = document.getElementById("status");
+  const results = document.getElementById("results");
+
+  function setStatus(text, kind) {
+    status.textContent = text;
+    status.className = "message " + (kind || "");
+  }
+
+  function badge(text, kind) {
+    const span = document.createElement("span");
+    span.className = "badge " + (kind || "");
+    span.textContent = text;
+    return span;
+  }
+
+  function section(title, items, emptyText) {
+    const wrapper = document.createElement("div");
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    wrapper.appendChild(heading);
+    if (items && items.length) {
+      const list = document.createElement("ul");
+      for (const item of items) {
+        const entry = document.createElement("li");
+        entry.textContent = item;
+        list.appendChild(entry);
+      }
+      wrapper.appendChild(list);
+    } else {
+      const empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = emptyText;
+      wrapper.appendChild(empty);
+    }
+    return wrapper;
+  }
+
+  function statusLabel(value) {
+    if (value === "skipped_raw") return "RAW skipped";
+    if (value === "unsupported") return "unsupported";
+    return value || "error";
+  }
+
+  function renderResult(result) {
+    const card = document.createElement("div");
+    card.className = "result";
+
+    const title = document.createElement("h2");
+    title.textContent = result.name;
+    card.appendChild(title);
+
+    const grid = document.createElement("div");
+    grid.className = "result-grid";
+
+    const left = document.createElement("div");
+    if (result.preview_url) {
+      const image = document.createElement("img");
+      image.src = result.preview_url;
+      image.alt = result.name;
+      image.addEventListener("error", () => {
+        const placeholder = document.createElement("div");
+        placeholder.className = "placeholder";
+        placeholder.textContent = "Preview not available in this browser.";
+        image.replaceWith(placeholder);
+      });
+      left.appendChild(image);
+    } else {
+      const placeholder = document.createElement("div");
+      placeholder.className = "placeholder";
+      placeholder.textContent = "No preview available.";
+      left.appendChild(placeholder);
+    }
+
+    const summary = document.createElement("div");
+    summary.className = "row";
+    summary.style.marginTop = "10px";
+    if (result.status === "success") {
+      const text = document.createElement("span");
+      text.className = "muted";
+      text.textContent =
+        result.fields_removed + " PII metadata field(s) removed from " +
+        (result.type || "file") + ".";
+      summary.appendChild(text);
+    } else {
+      summary.appendChild(badge(statusLabel(result.status), "bad"));
+      const text = document.createElement("span");
+      text.className = "muted";
+      text.textContent = result.error || (result.notes || []).join("; ") || "";
+      summary.appendChild(text);
+    }
+    left.appendChild(summary);
+
+    if (result.download_url) {
+      const action = document.createElement("div");
+      action.className = "row";
+      action.style.marginTop = "12px";
+      const link = document.createElement("a");
+      link.className = "button";
+      link.href = result.download_url;
+      link.setAttribute("download", "");
+      link.textContent = "Download scrubbed image";
+      action.appendChild(link);
+      left.appendChild(action);
+    }
+    grid.appendChild(left);
+
+    const side = document.createElement("aside");
+    side.className = "side";
+
+    const typical = result.typical_metadata || [];
+    side.appendChild(
+      section(
+        "Typical metadata for " + (result.type || "this file type") + " (can include PII)",
+        typical,
+        "No reference data for this format."
+      )
+    );
+
+    const removed = (result.removed_categories || []).map(
+      (item) => item.label + " (" + item.count + ")"
+    );
+    side.appendChild(
+      section(
+        "Removed",
+        removed,
+        result.status === "success"
+          ? "No PII metadata was found."
+          : "Nothing was removed."
+      )
+    );
+
+    const remains = (result.remaining_metadata || []).map((field) =>
+      field.group ? field.group + ": " + field.tag : field.tag
+    );
+    side.appendChild(
+      section(
+        "Remains",
+        remains,
+        result.status === "success"
+          ? "No embedded metadata remains."
+          : "Not applicable (no scrubbed copy)."
+      )
+    );
+
+    grid.appendChild(side);
+    card.appendChild(grid);
+    return card;
+  }
+
+  async function upload(fileList) {
+    if (!fileList || !fileList.length) return;
+    const form = new FormData();
+    for (const file of fileList) form.append("files", file);
+    results.replaceChildren();
+    setStatus("Uploading and scrubbing " + fileList.length + " file(s)...", "ok");
+    try {
+      const response = await fetch("/api/scrub-upload", {method: "POST", body: form});
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || response.statusText);
+      setStatus("Done. " + payload.results.length + " file(s) processed.", "ok");
+      for (const result of payload.results) results.appendChild(renderResult(result));
+    } catch (error) {
+      setStatus(error.message, "error");
+    }
+  }
+
+  zone.addEventListener("click", () => input.click());
+  zone.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      input.click();
+    }
+  });
+  ["dragenter", "dragover"].forEach((name) => {
+    zone.addEventListener(name, (event) => {
+      event.preventDefault();
+      zone.classList.add("dragover");
+    });
+  });
+  ["dragleave", "drop"].forEach((name) => {
+    zone.addEventListener(name, (event) => {
+      event.preventDefault();
+      zone.classList.remove("dragover");
+    });
+  });
+  zone.addEventListener("drop", (event) => upload(event.dataTransfer.files));
+  input.addEventListener("change", () => upload(input.files));
+</script>
+{% endblock %}
