@@ -18,4 +18,4 @@ RUN pip install .
 
 USER user
 EXPOSE 7860
-CMD ["metascrub", "gui", "--host", "0.0.0.0", "--port", "7860", "--db", "/tmp/metascrub/metascrub.db", "--upload-dir", "/tmp/metascrub/uploads"]
+CMD ["sh", "-c", "exec metascrub gui --host 0.0.0.0 --port ${PORT:-7860} --db /tmp/metascrub/metascrub.db --upload-dir /tmp/metascrub/uploads"]

@@ -89,7 +89,7 @@ Useful scrub options:
 metascrub gui --db metascrub.db
 ```
 
-Open <http://127.0.0.1:8765>. The app has two pages:
+Open <http://127.0.0.1:8765>. The app has three pages:
 
 **Scrub** (`/`)
 
@@ -109,8 +109,41 @@ Open <http://127.0.0.1:8765>. The app has two pages:
 3. The page reports dimensions, size, capture time, PII totals/categories, and
    any ExifTool warnings. The extracted data can be downloaded as JSON.
 
-Uploads are saved to `uploads/` next to the database and scrubbed copies to
-`uploads/scrubbed/`. Use `--upload-dir` to change the location:
+**Write** (`/write`)
+
+1. Drop or choose an image.
+2. Existing writable metadata fields are listed with editable values. Read-only
+   system/file/derived fields are not shown here; open the Extract page to view
+   them.
+3. Edit values, remove fields, or add a new field. The add-field row supports
+   **Text**, **JSON**, and **Binary** value types. Multi-value fields such as
+   `XMP-dc:Creator` and `IPTC:Keywords` use one value per line. Structured
+   fields such as `XMP-iptcExt:LocationShown` use a JSON object or array, and
+   binary fields such as `IFD1:ThumbnailImage` accept a replacement file.
+4. Click **Write metadata** to create a new copy. The original file is never
+   modified.
+5. ExifTool validates the result and the page reports which fields were
+   verified, plus a download link for the edited copy. Downloads are withheld
+   when ExifTool failed or the output could not be read back.
+
+`POST /api/write` clients send text with `value` or `values`, binary tags with
+`value_base64`, and structured tags with `value_json` (a JSON object or array).
+
+ExifTool cannot write every format. SVG and BMP are rejected with a clear
+message; RAW edits are allowed on a copy but may affect how some tools render
+the image. Only tags that ExifTool reports as writable are accepted; language
+variants such as `XMP-dc:Title-fr` are also editable. Non-Latin IPTC values are
+written as UTF-8 with the IPTC coded-character-set marker.
+
+Derived `Composite` and `File` fields are read-only and are not shown on the
+Write page; open the Extract page to inspect them. To change a derived field,
+edit its source tag instead, for example `Composite:GPSLatitude` points to
+`GPS:GPSLatitude` and `GPS:GPSLatitudeRef`. Some formats also expose read-only
+tags that ExifTool cannot write directly; an XMP equivalent is often writable.
+
+Uploads are saved to `uploads/` next to the database, scrubbed copies to
+`uploads/scrubbed/`, and edited copies to `uploads/edited/`. Use `--upload-dir`
+to change the location:
 
 ```bash
 metascrub gui --db metascrub.db --upload-dir ~/metascrub-uploads
@@ -123,6 +156,10 @@ The GUI is backed by the same JSON API (useful for scripts):
 | GET | `/api/health` | ExifTool/database status |
 | POST | `/api/extract-upload` | Upload images and return all extracted metadata fields |
 | POST | `/api/scrub-upload` | Upload and scrub images; returns preview/download URLs |
+| POST | `/api/write-upload` | Upload images and return writable metadata fields |
+| POST | `/api/write` | Apply metadata changes and return an edited copy |
+| GET | `/api/writes/{id}/preview` | Inline preview of an edited copy |
+| GET | `/api/writes/{id}/download` | Download an edited copy |
 | GET | `/api/files/{id}/preview` | Inline preview of an uploaded image |
 | POST | `/api/scan` | Scan a file or directory |
 | GET | `/api/files` | List indexed files (filters: search, type, category, severity) |

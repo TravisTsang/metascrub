@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -27,11 +28,16 @@ BINARY_TAGS = {
     "previewjxl",
     "xmpthumbnail",
     "imagedata",
+    "icc_profile",
     "image",
     "data",
 }
 
 MAX_TEXT_VALUE = 8192
+
+_BINARY_PLACEHOLDER_RE = re.compile(
+    r"^\(Binary data (\d+) bytes?, use -b option to extract\)$"
+)
 
 
 class ExifToolNotFound(RuntimeError):
@@ -182,9 +188,23 @@ def parse_exiftool_object(obj: dict[str, Any]) -> tuple[dict[str, Any], list[Met
             tags[f"{group}:{tag}"] = value
             continue
 
-        if tag_l in BINARY_TAGS or (isinstance(raw_value, str) and len(raw_value) > MAX_TEXT_VALUE):
-            original_len = len(raw_value) if isinstance(raw_value, str) else len(str(raw_value))
-            value = f"[binary data: {original_len} chars]"
+        placeholder = (
+            _BINARY_PLACEHOLDER_RE.match(raw_value)
+            if isinstance(raw_value, str)
+            else None
+        )
+        if (
+            tag_l in BINARY_TAGS
+            or placeholder
+            or (isinstance(raw_value, str) and len(raw_value) > MAX_TEXT_VALUE)
+        ):
+            if placeholder:
+                value = f"[binary data: {placeholder.group(1)} bytes]"
+            else:
+                original_len = (
+                    len(raw_value) if isinstance(raw_value, str) else len(str(raw_value))
+                )
+                value = f"[binary data: {original_len} chars]"
             value_type = "binary"
 
         if tag_l == "imagedatahash" and value:

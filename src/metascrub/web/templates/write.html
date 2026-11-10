@@ -1,0 +1,741 @@
+{% extends "base.html" %}
+{% block title %}Write metadata - metascrub{% endblock %}
+{% block content %}
+<h1>Write metadata</h1>
+<p class="muted">
+  Drop an image to its edit metadata fields.
+</p>
+
+<div id="write-dropzone" class="dropzone" tabindex="0" role="button"
+     aria-label="Upload an image to edit metadata">
+  <strong>Drop an image here</strong><br>
+  <span>or click to choose a file</span>
+  <input type="file" id="write-file-input" multiple hidden
+         accept=".jpg,.jpeg,.png,.tif,.tiff,.webp,.heic,.heif,.avif,.gif,.dng,.cr2,.cr3,.nef,.arw,.raf,.orf,.rw2,.pef,.srw,.iiq,.x3f">
+</div>
+
+<datalist id="write-groups">
+  <option value="EXIF"></option>
+  <option value="IFD0"></option>
+  <option value="ExifIFD"></option>
+  <option value="XMP"></option>
+  <option value="XMP-dc"></option>
+  <option value="XMP-photoshop"></option>
+  <option value="XMP-exif"></option>
+  <option value="IPTC"></option>
+  <option value="Photoshop"></option>
+  <option value="ICC_Profile"></option>
+  <option value="PNG"></option>
+  <option value="GIF"></option>
+  <option value="QuickTime"></option>
+  <option value="MakerNotes"></option>
+</datalist>
+
+<div id="write-status" class="message"></div>
+<div id="write-results" class="results"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const zone = document.getElementById("write-dropzone");
+  const input = document.getElementById("write-file-input");
+  const status = document.getElementById("write-status");
+  const results = document.getElementById("write-results");
+
+  function setStatus(element, text, kind) {
+    element.textContent = text;
+    element.className = "message " + (kind || "");
+  }
+
+  function badge(text, kind) {
+    const span = document.createElement("span");
+    span.className = "badge " + (kind || "");
+    span.textContent = text;
+    return span;
+  }
+
+  function muted(text) {
+    const span = document.createElement("span");
+    span.className = "muted";
+    span.textContent = text;
+    return span;
+  }
+
+  function formatBytes(value) {
+    if (value === null || value === undefined) return "unknown size";
+    const units = ["B", "KB", "MB", "GB"];
+    let size = value;
+    let index = 0;
+    while (size >= 1024 && index < units.length - 1) {
+      size /= 1024;
+      index += 1;
+    }
+    return (index === 0 ? size : size.toFixed(1)) + " " + units[index];
+  }
+
+  function dimensions(result) {
+    if (!result.width || !result.height) return "unknown dimensions";
+    return result.width + " x " + result.height;
+  }
+
+  function cell(text, className) {
+    const td = document.createElement("td");
+    if (className) td.className = className;
+    td.textContent = text === null || text === undefined || text === "" ? "-" : text;
+    return td;
+  }
+
+  function prettyJson(value) {
+    try {
+      return JSON.stringify(JSON.parse(value), null, 2);
+    } catch (error) {
+      return value;
+    }
+  }
+
+  function canonicalJson(value) {
+    try {
+      const parsed = typeof value === "string" ? JSON.parse(value) : value;
+      return JSON.stringify(parsed);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result || "");
+        const comma = result.indexOf(",");
+        resolve(comma >= 0 ? result.slice(comma + 1) : "");
+      };
+      reader.onerror = () => reject(reader.error || new Error("Could not read file."));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function displayValue(field) {
+    if (field.struct && field.value) {
+      return prettyJson(field.value);
+    }
+    if (field.multi && field.values && field.values.length) {
+      return field.values.join(" | ");
+    }
+    if (field.value === null || field.value === undefined || field.value === "") {
+      return "-";
+    }
+    return field.value;
+  }
+
+  function fieldInput(field) {
+    if (field.binary) {
+      const file = document.createElement("input");
+      file.type = "file";
+      file.className = "field-input binary-input";
+      file.title = "Choose a replacement file";
+      return file;
+    }
+    if (field.struct) {
+      const textarea = document.createElement("textarea");
+      textarea.className = "field-input struct-input";
+      textarea.rows = 5;
+      textarea.value = prettyJson(field.value_json || field.value || "");
+      textarea.placeholder = "JSON object or array";
+      return textarea;
+    }
+    if (field.multi) {
+      const textarea = document.createElement("textarea");
+      textarea.className = "field-input";
+      textarea.rows = 2;
+      textarea.value = (field.values || []).join("\n");
+      textarea.placeholder = "One value per line";
+      return textarea;
+    }
+    const text = document.createElement("input");
+    text.type = "text";
+    text.className = "field-input";
+    text.value = field.value || "";
+    text.placeholder = "New value";
+    return text;
+  }
+
+  function makeRemoveButton(row, control) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "button alt";
+    button.textContent = "Remove";
+    button.addEventListener("click", () => {
+      if (row.classList.contains("removed")) {
+        row.classList.remove("removed");
+        button.textContent = "Remove";
+        control.disabled = false;
+      } else {
+        row.classList.add("removed");
+        button.textContent = "Undo";
+        control.disabled = true;
+      }
+    });
+    return button;
+  }
+
+  function addExistingRow(tbody, field) {
+    const row = document.createElement("tr");
+    if (field.is_pii) row.className = "pii";
+    row.dataset.group = field.group || "";
+    row.dataset.tag = field.tag;
+    row.dataset.multi = field.multi ? "1" : "0";
+    row.dataset.binary = field.binary ? "1" : "0";
+    row.dataset.struct = field.struct ? "1" : "0";
+    if (field.struct) {
+      row.dataset.original = canonicalJson(field.value_json || field.value || "") || "";
+    } else {
+      row.dataset.original = field.multi
+        ? JSON.stringify(field.values || [])
+        : (field.value || "");
+    }
+
+    row.appendChild(cell(field.group));
+    const tagCell = cell(field.tag);
+    if (field.is_pii) {
+      tagCell.appendChild(document.createTextNode(" "));
+      tagCell.appendChild(badge(field.category_label || field.category || "PII", "bad"));
+    }
+    row.appendChild(tagCell);
+    row.appendChild(cell(displayValue(field), "value"));
+
+    const control = fieldInput(field);
+    const valueCell = document.createElement("td");
+    valueCell.appendChild(control);
+    row.appendChild(valueCell);
+
+    const actionCell = document.createElement("td");
+    actionCell.appendChild(makeRemoveButton(row, control));
+    row.appendChild(actionCell);
+    tbody.appendChild(row);
+  }
+
+  function addNewRow(tbody, group, tag, value, valueType) {
+    const row = document.createElement("tr");
+    row.dataset.new = "1";
+    row.dataset.valueType = valueType || "text";
+
+    const groupCell = document.createElement("td");
+    const groupInput = document.createElement("input");
+    groupInput.type = "text";
+    groupInput.className = "field-input new-group";
+    groupInput.placeholder = "EXIF, XMP-dc, IPTC...";
+    groupInput.setAttribute("list", "write-groups");
+    groupInput.value = group;
+    groupCell.appendChild(groupInput);
+    row.appendChild(groupCell);
+
+    const tagCell = document.createElement("td");
+    const tagInput = document.createElement("input");
+    tagInput.type = "text";
+    tagInput.className = "field-input new-tag";
+    tagInput.placeholder = "Artist";
+    tagInput.value = tag;
+    tagCell.appendChild(tagInput);
+    row.appendChild(tagCell);
+
+    row.appendChild(cell("-"));
+
+    const valueCell = document.createElement("td");
+    const valueInput = document.createElement(
+      valueType === "json" ? "textarea" : "input"
+    );
+    valueInput.className = "field-input new-value";
+    if (valueType === "binary") {
+      valueInput.type = "file";
+      valueInput.title = "Choose a replacement file";
+    } else if (valueType === "json") {
+      valueInput.rows = 4;
+      valueInput.placeholder = "JSON object or array";
+      valueInput.value = value || "{}";
+    } else {
+      valueInput.type = "text";
+      valueInput.placeholder = "Value";
+      valueInput.value = value || "";
+    }
+    valueCell.appendChild(valueInput);
+    row.appendChild(valueCell);
+
+    const actionCell = document.createElement("td");
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "button alt";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => row.remove());
+    actionCell.appendChild(remove);
+    row.appendChild(actionCell);
+
+    tbody.appendChild(row);
+    if (!tagInput.value) tagInput.focus();
+  }
+
+  async function collectChanges(card) {
+    const changes = [];
+    const rows = card.querySelectorAll(".write-table tbody tr");
+    for (const row of rows) {
+      if (row.dataset.new === "1") {
+        const group = row.querySelector(".new-group").value.trim();
+        const tag = row.querySelector(".new-tag").value.trim();
+        const control = row.querySelector(".new-value");
+        const valueType = row.dataset.valueType || "text";
+        if (!tag) {
+          throw new Error("New fields need a tag.");
+        }
+        if (valueType === "binary") {
+          const file = control.files[0];
+          if (!file) {
+            throw new Error("Choose a file for binary field " + tag + ".");
+          }
+          changes.push({group, tag, value_base64: await fileToBase64(file)});
+        } else if (valueType === "json") {
+          const text = control.value.trim();
+          if (!text) {
+            changes.push({group, tag, action: "delete"});
+            continue;
+          }
+          let parsed;
+          try {
+            parsed = JSON.parse(text);
+          } catch (error) {
+            throw new Error("Invalid JSON for new field " + tag + ".");
+          }
+          if (typeof parsed !== "object" || parsed === null) {
+            throw new Error("JSON fields must be an object or array.");
+          }
+          changes.push({group, tag, value_json: text});
+        } else {
+          const value = control.value;
+          if (!value) {
+            throw new Error("New fields need a tag and a value.");
+          }
+          changes.push({group, tag, value});
+        }
+        continue;
+      }
+
+      const group = row.dataset.group || "";
+      const tag = row.dataset.tag || "";
+      if (row.classList.contains("removed")) {
+        changes.push({group, tag, action: "delete"});
+        continue;
+      }
+
+      const control = row.querySelector(".field-input");
+      if (row.dataset.binary === "1") {
+        const file = control.files[0];
+        if (!file) continue;
+        changes.push({group, tag, value_base64: await fileToBase64(file)});
+        continue;
+      }
+
+      if (row.dataset.struct === "1") {
+        const text = control.value.trim();
+        if (!text) {
+          changes.push({group, tag, action: "delete"});
+          continue;
+        }
+        let parsed;
+        try {
+          parsed = JSON.parse(text);
+        } catch (error) {
+          throw new Error(
+            "Invalid JSON for " + (group ? group + ":" : "") + tag + "."
+          );
+        }
+        if (typeof parsed !== "object" || parsed === null) {
+          throw new Error("JSON fields must be an object or array.");
+        }
+        if (JSON.stringify(parsed) === row.dataset.original) continue;
+        changes.push({group, tag, value_json: text});
+        continue;
+      }
+
+      if (row.dataset.multi === "1") {
+        const values = control.value
+          .split("\n")
+          .map((item) => item.trim())
+          .filter(Boolean);
+        const original = JSON.parse(row.dataset.original || "[]");
+        if (JSON.stringify(values) === JSON.stringify(original)) continue;
+        if (!values.length) {
+          changes.push({group, tag, action: "delete"});
+        } else {
+          changes.push({group, tag, values});
+        }
+        continue;
+      }
+
+      const value = control.value;
+      const original = row.dataset.original || "";
+      if (value === original) continue;
+      if (value === "") {
+        changes.push({group, tag, action: "delete"});
+      } else {
+        changes.push({group, tag, value});
+      }
+    }
+    return changes;
+  }
+
+  async function submitWrite(card, result, button, writeStatus, actions) {
+    let changes;
+    try {
+      changes = await collectChanges(card);
+    } catch (error) {
+      setStatus(writeStatus, error.message, "error");
+      return;
+    }
+    if (!changes.length) {
+      setStatus(writeStatus, "No changes to write.", "ok");
+      return;
+    }
+
+    button.disabled = true;
+    actions.replaceChildren();
+    setStatus(writeStatus, "Writing metadata...", "ok");
+    try {
+      const response = await fetch("/api/write", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({file_id: result.file_id, changes})
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || response.statusText);
+
+      const ok = payload.status === "success";
+      setStatus(
+        writeStatus,
+        ok
+          ? "Metadata written and verified."
+          : (payload.error || "Metadata written, but verification reported a problem."),
+        ok ? "ok" : "error"
+      );
+
+      actions.replaceChildren();
+      if (payload.download_url) {
+        const link = document.createElement("a");
+        link.className = "button";
+        link.href = payload.download_url;
+        link.setAttribute("download", "");
+        link.textContent = "Download edited image";
+        actions.appendChild(link);
+      }
+      if (payload.verified_fields && payload.verified_fields.length) {
+        actions.appendChild(
+          muted("Verified: " + payload.verified_fields.join(", "))
+        );
+      }
+      if (payload.failed_fields && payload.failed_fields.length) {
+        actions.appendChild(
+          muted("Unverified: " + payload.failed_fields.join(", "))
+        );
+      }
+      if (payload.notes && payload.notes.length) {
+        actions.appendChild(muted(payload.notes.join("; ")));
+      }
+      if (payload.preview_url) {
+        const preview = card.querySelector(".preview-image");
+        if (preview) preview.src = payload.preview_url + "?t=" + Date.now();
+      }
+    } catch (error) {
+      setStatus(writeStatus, error.message, "error");
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function renderResult(result) {
+    const card = document.createElement("div");
+    card.className = "result";
+
+    const title = document.createElement("h2");
+    title.textContent = result.name;
+    card.appendChild(title);
+
+    const grid = document.createElement("div");
+    grid.className = "result-grid";
+
+    const left = document.createElement("div");
+    if (result.preview_url) {
+      const image = document.createElement("img");
+      image.className = "preview-image";
+      image.src = result.preview_url;
+      image.alt = result.name;
+      image.addEventListener("error", () => {
+        const placeholder = document.createElement("div");
+        placeholder.className = "placeholder";
+        placeholder.textContent = "Preview not available in this browser.";
+        image.replaceWith(placeholder);
+      });
+      left.appendChild(image);
+    } else {
+      const placeholder = document.createElement("div");
+      placeholder.className = "placeholder";
+      placeholder.textContent = "No preview available.";
+      left.appendChild(placeholder);
+    }
+    grid.appendChild(left);
+
+    const side = document.createElement("aside");
+    side.className = "side";
+    const details = document.createElement("h3");
+    details.textContent = "File details";
+    side.appendChild(details);
+
+    const summary = document.createElement("div");
+    summary.className = "summary-line";
+    summary.appendChild(badge(result.type || "UNKNOWN"));
+    summary.appendChild(muted(dimensions(result)));
+    summary.appendChild(muted(formatBytes(result.size_bytes)));
+    side.appendChild(summary);
+
+    const writeState = document.createElement("p");
+    writeState.className = "muted";
+    writeState.style.margin = "10px 0 0";
+    if (result.write_supported) {
+      writeState.textContent =
+        "Writable fields: " + (result.writable_count || 0) +
+        " | Read-only fields: " + (result.readonly_count || 0);
+    } else {
+      writeState.textContent = result.write_error || "Writing is not available for this file.";
+    }
+    side.appendChild(writeState);
+
+    if (result.write_supported && result.readonly_count) {
+      const hint = document.createElement("p");
+      hint.className = "muted";
+      hint.style.marginTop = "8px";
+      hint.textContent =
+        "Read-only fields are hidden on this page. Open the Extract page to " +
+        "view them; to change a derived field, edit its source tag " +
+        "(for example Composite:GPSLatitude -> GPS:GPSLatitude).";
+      side.appendChild(hint);
+    }
+
+    if (result.write_note) {
+      const note = document.createElement("p");
+      note.className = "muted";
+      note.style.marginTop = "8px";
+      note.textContent = result.write_note;
+      side.appendChild(note);
+    }
+
+    if (result.status !== "success") {
+      const error = document.createElement("div");
+      error.className = "row";
+      error.style.marginTop = "10px";
+      error.appendChild(badge(result.status || "error", "bad"));
+      if (result.error) error.appendChild(muted(result.error));
+      side.appendChild(error);
+    }
+
+    if (result.warnings && result.warnings.length) {
+      const warnings = document.createElement("p");
+      warnings.className = "muted";
+      warnings.style.marginTop = "8px";
+      warnings.textContent = "Warnings: " + result.warnings.join("; ");
+      side.appendChild(warnings);
+    }
+    grid.appendChild(side);
+    card.appendChild(grid);
+
+    if (result.status !== "success" || !result.write_supported || !result.file_id) {
+      return card;
+    }
+
+    const writable = (result.fields || []).filter((field) => field.writable);
+
+    const heading = document.createElement("h3");
+    heading.className = "section-heading";
+    heading.textContent = "Editable metadata (" + writable.length + " fields)";
+    card.appendChild(heading);
+
+    const wrap = document.createElement("div");
+    wrap.className = "meta-table-wrap";
+    const table = document.createElement("table");
+    table.className = "metadata write-table";
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    for (const label of ["Group", "Tag", "Current value", "New value", "Action"]) {
+      const th = document.createElement("th");
+      th.textContent = label;
+      headRow.appendChild(th);
+    }
+    head.appendChild(headRow);
+    table.appendChild(head);
+    const body = document.createElement("tbody");
+    for (const field of writable) addExistingRow(body, field);
+    table.appendChild(body);
+    wrap.appendChild(table);
+    card.appendChild(wrap);
+
+    if (!writable.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "No writable metadata fields were found. Add a new field below.";
+      card.appendChild(empty);
+    }
+
+    const addField = document.createElement("div");
+    addField.className = "add-field";
+    const groupInput = document.createElement("input");
+    groupInput.type = "text";
+    groupInput.className = "field-input";
+    groupInput.placeholder = "Group (optional)";
+    groupInput.setAttribute("list", "write-groups");
+    const tagInput = document.createElement("input");
+    tagInput.type = "text";
+    tagInput.className = "field-input";
+    tagInput.placeholder = "Tag";
+    const typeSelect = document.createElement("select");
+    typeSelect.className = "field-input";
+    for (const [value, label] of [
+      ["text", "Text"],
+      ["json", "JSON"],
+      ["binary", "Binary"],
+    ]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      typeSelect.appendChild(option);
+    }
+    const valueInput = document.createElement("input");
+    valueInput.type = "text";
+    valueInput.className = "field-input";
+    valueInput.placeholder = "Value";
+    const syncAddType = () => {
+      const valueType = typeSelect.value;
+      valueInput.disabled = valueType === "binary";
+      valueInput.placeholder = valueType === "binary"
+        ? "Choose a file after adding"
+        : (valueType === "json" ? "JSON object or array" : "Value");
+    };
+    typeSelect.addEventListener("change", syncAddType);
+    syncAddType();
+    const addButton = document.createElement("button");
+    addButton.type = "button";
+    addButton.className = "button alt";
+    addButton.textContent = "Add field";
+    addButton.addEventListener("click", () => {
+      const tag = tagInput.value.trim();
+      const valueType = typeSelect.value;
+      const value = valueInput.value;
+      if (!tag || (valueType === "text" && !value)) {
+        setStatus(status, "New text fields need a tag and a value.", "error");
+        return;
+      }
+      const table = card.querySelector(".write-table");
+      if (!table) {
+        setStatus(status, "No editable table is available for this file.", "error");
+        return;
+      }
+      addNewRow(
+        table.querySelector("tbody"),
+        groupInput.value.trim(),
+        tag,
+        value,
+        valueType
+      );
+      groupInput.value = "";
+      tagInput.value = "";
+      valueInput.value = "";
+      setStatus(status, "Field added. Edit it or click Write metadata.", "ok");
+    });
+    addField.append(groupInput, tagInput, typeSelect, valueInput, addButton);
+    card.appendChild(addField);
+
+    const actions = document.createElement("div");
+    actions.className = "row";
+    actions.style.marginTop = "12px";
+    const writeButton = document.createElement("button");
+    writeButton.type = "button";
+    writeButton.className = "button";
+    writeButton.textContent = "Write metadata";
+    const resetButton = document.createElement("button");
+    resetButton.type = "button";
+    resetButton.className = "button alt";
+    resetButton.textContent = "Reset";
+    resetButton.addEventListener("click", () => {
+      for (const row of card.querySelectorAll(".write-table tbody tr")) {
+        if (row.dataset.new === "1") {
+          row.remove();
+          continue;
+        }
+        row.classList.remove("removed");
+        const control = row.querySelector(".field-input");
+        if (row.dataset.binary === "1") {
+          control.value = "";
+        } else if (row.dataset.struct === "1") {
+          control.value = prettyJson(row.dataset.original || "{}");
+        } else if (row.dataset.multi === "1") {
+          control.value = JSON.parse(row.dataset.original || "[]").join("\n");
+        } else {
+          control.value = row.dataset.original || "";
+        }
+        control.disabled = false;
+        const remove = row.querySelector("button");
+        if (remove) remove.textContent = "Remove";
+      }
+      setStatus(status, "Changes reset.", "ok");
+    });
+    const writeStatus = document.createElement("div");
+    writeStatus.className = "message";
+    const writeResult = document.createElement("div");
+    writeResult.className = "row";
+    writeResult.style.marginTop = "10px";
+    writeButton.addEventListener("click", () => {
+      submitWrite(card, result, writeButton, writeStatus, writeResult);
+    });
+    actions.append(writeButton, resetButton);
+    card.appendChild(actions);
+    card.appendChild(writeStatus);
+    card.appendChild(writeResult);
+
+    return card;
+  }
+
+  async function upload(fileList) {
+    if (!fileList || !fileList.length) return;
+    const form = new FormData();
+    for (const file of fileList) form.append("files", file);
+    results.replaceChildren();
+    setStatus(status, "Uploading " + fileList.length + " file(s)...", "ok");
+    try {
+      const response = await fetch("/api/write-upload", {method: "POST", body: form});
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || response.statusText);
+      setStatus(status, "Done. " + payload.results.length + " file(s) processed.", "ok");
+      for (const result of payload.results) results.appendChild(renderResult(result));
+    } catch (error) {
+      setStatus(status, error.message, "error");
+    }
+  }
+
+  zone.addEventListener("click", () => input.click());
+  zone.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      input.click();
+    }
+  });
+  ["dragenter", "dragover"].forEach((name) => {
+    zone.addEventListener(name, (event) => {
+      event.preventDefault();
+      zone.classList.add("dragover");
+    });
+  });
+  ["dragleave", "drop"].forEach((name) => {
+    zone.addEventListener(name, (event) => {
+      event.preventDefault();
+      zone.classList.remove("dragover");
+    });
+  });
+  zone.addEventListener("drop", (event) => upload(event.dataTransfer.files));
+  input.addEventListener("change", () => upload(input.files));
+</script>
+{% endblock %}

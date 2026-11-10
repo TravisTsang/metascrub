@@ -12,12 +12,19 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from ..db import Database
-from ..detector import detect_file
+from ..detector import detect_file, is_raw
 from ..extractor import build_scan_result, exiftool_version, extract_many, find_exiftool
-from ..models import ScrubOptions
+from ..models import MetadataChange, ScrubOptions
 from ..pii import is_embedded
 from ..pipeline import scan_paths, scrub_paths
 from ..scrubber import scrub_file
+from ..writer import (
+    changes_for_storage,
+    field_write_info,
+    normalize_changes,
+    write_metadata,
+    write_supported,
+)
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 
@@ -156,6 +163,21 @@ class ScrubRequest(BaseModel):
     neutralize_times: bool = False
 
 
+class MetadataChangeRequest(BaseModel):
+    group: str = ""
+    tag: str
+    value: str | None = None
+    values: list[str] | None = None
+    value_base64: str | None = None
+    value_json: str | None = None
+    action: str = "set"
+
+
+class WriteRequest(BaseModel):
+    file_id: int
+    changes: list[MetadataChangeRequest]
+
+
 def _safe_upload_name(filename: str) -> str:
     name = (filename or "upload").replace("\\", "/").replace("\x00", "")
     name = Path(name).name.strip()
@@ -260,6 +282,66 @@ def _extract_payload(outcome) -> dict[str, Any]:
     }
 
 
+def _write_upload_payload(outcome) -> dict[str, Any]:
+    scan = outcome.scan
+    supported, write_error = write_supported(scan.path, scan.detected.file_type)
+    fields: list[dict[str, Any]] = []
+    for field in scan.fields:
+        group = (field.group or "").strip()
+        if group.lower() in ("system", "exiftool"):
+            continue
+        info = field_write_info(field)
+        fields.append(
+            {
+                "group": group,
+                "tag": field.tag,
+                "value": field.value,
+                "value_type": field.value_type,
+                "values": info["values"],
+                "multi": info["multi"],
+                "binary": info.get("binary", False),
+                "struct": info.get("struct", False),
+                "value_json": info.get("value_json"),
+                "writable": info["writable"],
+                "readonly_reason": info["reason"],
+                "is_pii": field.is_pii,
+                "category": field.pii_category,
+                "category_label": (
+                    _CATEGORY_LABELS.get(field.pii_category, field.pii_category.title())
+                    if field.pii_category
+                    else None
+                ),
+                "severity": field.severity,
+            }
+        )
+    writable_count = sum(1 for field in fields if field["writable"])
+    return {
+        "file_id": outcome.file_id,
+        "name": scan.path.name,
+        "type": scan.detected.file_type,
+        "mime_type": scan.detected.mime_type,
+        "size_bytes": scan.size_bytes,
+        "width": scan.width,
+        "height": scan.height,
+        "captured_at": scan.captured_at,
+        "sha256": scan.sha256,
+        "fields": fields,
+        "writable_count": writable_count,
+        "readonly_count": len(fields) - writable_count,
+        "write_supported": supported,
+        "write_error": write_error,
+        "write_note": (
+            "RAW metadata edits may affect how some tools render the image; "
+            "the original file was not modified."
+            if is_raw(scan.detected.file_type)
+            else None
+        ),
+        "warnings": scan.warnings,
+        "error": scan.error,
+        "preview_url": f"/api/files/{outcome.file_id}/preview",
+    }
+
+
 def _removed_categories(scan) -> list[dict[str, Any]]:
     counts = Counter(
         field.pii_category
@@ -316,6 +398,22 @@ def _scrub_payload(result) -> dict[str, Any]:
     }
 
 
+def _write_result_payload(result) -> dict[str, Any]:
+    return {
+        "source": str(result.source),
+        "output": str(result.output) if result.output else None,
+        "status": result.status,
+        "fields_written": result.fields_written,
+        "verified": result.verified,
+        "image_hash_before": result.image_hash_before,
+        "image_hash_after": result.image_hash_after,
+        "verified_fields": result.verified_fields,
+        "failed_fields": result.failed_fields,
+        "notes": result.notes,
+        "error": result.error,
+    }
+
+
 def create_app(
     db_path: str | Path = "metascrub.db",
     upload_dir: str | Path | None = None,
@@ -326,6 +424,7 @@ def create_app(
     else:
         upload_root = Path(upload_dir).expanduser().resolve()
     scrub_root = upload_root / "scrubbed"
+    write_root = upload_root / "edited"
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -337,6 +436,7 @@ def create_app(
     app.state.db_path = str(db_path)
     app.state.upload_dir = upload_root
     app.state.scrub_dir = scrub_root
+    app.state.write_dir = write_root
     templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 
     @app.get("/")
@@ -347,6 +447,12 @@ def create_app(
     def extract(request: Request):
         return templates.TemplateResponse(
             request=request, name="extract.html", context={}
+        )
+
+    @app.get("/write")
+    def write(request: Request):
+        return templates.TemplateResponse(
+            request=request, name="write.html", context={}
         )
 
     @app.post("/api/extract-upload")
@@ -375,6 +481,40 @@ def create_app(
                 continue
 
             payload = _extract_payload(outcomes[0])
+            payload["status"] = "error" if payload["error"] else "success"
+            entries.append(payload)
+
+        return {"results": entries}
+
+    @app.post("/api/write-upload")
+    def api_write_upload(files: Annotated[list[UploadFile], File(...)]):
+        db: Database = app.state.db
+        upload_root.mkdir(parents=True, exist_ok=True)
+        entries: list[dict[str, Any]] = []
+
+        for upload in files:
+            destination = _save_upload(upload, upload_root)
+            outcomes, _ = scan_paths([destination], db, recursive=False)
+            if not outcomes:
+                entries.append(
+                    {
+                        "name": destination.name,
+                        "type": "UNKNOWN",
+                        "status": "unsupported",
+                        "preview_url": None,
+                        "fields": [],
+                        "writable_count": 0,
+                        "readonly_count": 0,
+                        "write_supported": False,
+                        "write_error": "Unsupported or unrecognized image type.",
+                        "write_note": None,
+                        "warnings": [],
+                        "error": "Unsupported or unrecognized image type.",
+                    }
+                )
+                continue
+
+            payload = _write_upload_payload(outcomes[0])
             payload["status"] = "error" if payload["error"] else "success"
             entries.append(payload)
 
@@ -439,6 +579,62 @@ def create_app(
             )
 
         return {"results": entries}
+
+    @app.post("/api/write")
+    def api_write(payload: WriteRequest):
+        db: Database = app.state.db
+        file = db.get_file(payload.file_id)
+        if file is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        source = Path(file["path"])
+        if not source.is_file():
+            raise HTTPException(status_code=404, detail="Uploaded file not found")
+
+        changes = [
+            MetadataChange(
+                group=change.group,
+                tag=change.tag,
+                value=change.value,
+                values=change.values,
+                value_base64=change.value_base64,
+                value_json=change.value_json,
+                action=change.action,
+            )
+            for change in payload.changes
+        ]
+        normalized = normalize_changes(changes)
+
+        outcomes, _ = scan_paths([source], db, recursive=False)
+        if not outcomes:
+            raise HTTPException(
+                status_code=400, detail="Unsupported or unrecognized image type."
+            )
+        outcome = outcomes[0]
+        supported, reason = write_supported(
+            outcome.scan.path, outcome.scan.detected.file_type
+        )
+        if not supported:
+            raise HTTPException(
+                status_code=400, detail=reason or "This file format is not writable."
+            )
+
+        write_root.mkdir(parents=True, exist_ok=True)
+        output = _unique_path(write_root, source.name)
+        result = write_metadata(outcome.scan, output, normalized)
+        job_id = db.record_write(
+            outcome.file_id, result, write_root, changes_for_storage(normalized)
+        )
+
+        response = _write_result_payload(result)
+        response["file_id"] = outcome.file_id
+        response["job_id"] = job_id
+        if result.output is not None and result.status in ("success", "verification_failed"):
+            response["download_url"] = f"/api/writes/{job_id}/download"
+            response["preview_url"] = f"/api/writes/{job_id}/preview"
+        else:
+            response["download_url"] = None
+            response["preview_url"] = None
+        return response
 
     @app.get("/api/files/{file_id}/preview")
     def api_preview(file_id: int):
@@ -548,6 +744,35 @@ def create_app(
                 raise HTTPException(status_code=403, detail="Path outside output root")
         except ValueError:
             raise HTTPException(status_code=403, detail="Path outside output root")
+        return FileResponse(output, filename=output.name)
+
+    def _write_job_output(job_id: int) -> Path:
+        job = app.state.db.get_write_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Write job not found")
+        if job["status"] not in ("success", "verification_failed"):
+            raise HTTPException(
+                status_code=409,
+                detail="This edited file is not available because verification failed.",
+            )
+        output = Path(job["output_path"]).resolve()
+        root = Path(job["output_root"]).resolve()
+        if not output.exists() or not output.is_file():
+            raise HTTPException(status_code=404, detail="Edited file not found")
+        try:
+            if not output.is_relative_to(root):
+                raise HTTPException(status_code=403, detail="Path outside output root")
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Path outside output root")
+        return output
+
+    @app.get("/api/writes/{job_id}/preview")
+    def api_write_preview(job_id: int):
+        return FileResponse(_write_job_output(job_id))
+
+    @app.get("/api/writes/{job_id}/download")
+    def api_write_download(job_id: int):
+        output = _write_job_output(job_id)
         return FileResponse(output, filename=output.name)
 
     @app.get("/api/report")

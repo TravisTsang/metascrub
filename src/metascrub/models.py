@@ -87,3 +87,29 @@ class ScrubOptions:
     neutralize_times: bool = False
     keep_orientation: bool = True
     keep_color: bool = True
+
+
+@dataclass
+class MetadataChange:
+    group: str
+    tag: str
+    value: str | None = None
+    values: list[str] | None = None
+    value_base64: str | None = None
+    value_json: str | None = None
+    action: str = "set"
+
+
+@dataclass
+class WriteResult:
+    source: Path
+    output: Path | None
+    status: str
+    fields_written: int = 0
+    verified: bool | None = None
+    image_hash_before: str | None = None
+    image_hash_after: str | None = None
+    verified_fields: list[str] = field(default_factory=list)
+    failed_fields: list[str] = field(default_factory=list)
+    error: str | None = None
+    notes: list[str] = field(default_factory=list)

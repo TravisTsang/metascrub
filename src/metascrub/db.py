@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Self
 
-from .models import MetaField, ScanResult, ScrubResult
+from .models import MetaField, ScanResult, ScrubResult, WriteResult
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -60,6 +60,23 @@ CREATE TABLE IF NOT EXISTS scrub_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_file ON scrub_jobs(file_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON scrub_jobs(status);
+
+CREATE TABLE IF NOT EXISTS write_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER REFERENCES files(id) ON DELETE SET NULL,
+    output_path TEXT NOT NULL,
+    output_root TEXT NOT NULL,
+    status TEXT NOT NULL,
+    fields_written INTEGER NOT NULL DEFAULT 0,
+    changes_json TEXT NOT NULL DEFAULT '[]',
+    image_hash_before TEXT,
+    image_hash_after TEXT,
+    verified INTEGER,
+    error TEXT,
+    written_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_write_jobs_file ON write_jobs(file_id);
+CREATE INDEX IF NOT EXISTS idx_write_jobs_status ON write_jobs(status);
 
 CREATE VIEW IF NOT EXISTS file_pii_summary AS
 SELECT
@@ -227,6 +244,53 @@ class Database:
             job_id = int(cursor.lastrowid)
         self._secure_permissions()
         return job_id
+
+    def record_write(
+        self,
+        file_id: int,
+        result: WriteResult,
+        output_root: Path,
+        changes: list[dict[str, Any]],
+    ) -> int:
+        with self._lock, self.conn:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO write_jobs (
+                    file_id, output_path, output_root, status, fields_written,
+                    changes_json, image_hash_before, image_hash_after, verified,
+                    error, written_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    file_id,
+                    str(result.output) if result.output else "",
+                    str(output_root),
+                    result.status,
+                    result.fields_written,
+                    json.dumps(changes, ensure_ascii=False, sort_keys=True),
+                    result.image_hash_before,
+                    result.image_hash_after,
+                    1 if result.verified else (0 if result.verified is False else None),
+                    result.error,
+                    utc_now(),
+                ),
+            )
+            job_id = int(cursor.lastrowid)
+        self._secure_permissions()
+        return job_id
+
+    def get_write_job(self, job_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.conn.execute(
+                """
+                SELECT j.*, f.path AS source_path, f.detected_type
+                FROM write_jobs j
+                LEFT JOIN files f ON f.id = j.file_id
+                WHERE j.id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def get_file(self, file_id: int) -> dict[str, Any] | None:
         with self._lock:

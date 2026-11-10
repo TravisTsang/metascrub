@@ -114,16 +114,20 @@
     .badge.ok { color: var(--good); border-color: var(--good); }
     .badge.bad { color: var(--bad); border-color: var(--bad); }
     .badge.warn { color: var(--warn); border-color: var(--warn); }
-    a.button, a.button:visited {
+    a.button, a.button:visited, button.button {
       display: inline-block;
       background: var(--accent);
       color: #06101d;
       text-decoration: none;
+      border: 0;
       border-radius: 4px;
       padding: 9px 16px;
+      font: inherit;
       font-weight: 700;
+      cursor: pointer;
     }
-    a.button.alt { background: var(--border); color: var(--text); }
+    a.button.alt, button.button.alt { background: var(--border); color: var(--text); }
+    button.button:disabled { opacity: .5; cursor: not-allowed; }
     .topnav {
       display: flex;
       align-items: center;
@@ -181,6 +185,31 @@
       overflow-wrap: anywhere;
       max-width: 460px;
     }
+    table.metadata td input.field-input,
+    table.metadata td textarea.field-input,
+    .add-field input.field-input {
+      width: 100%;
+      min-width: 120px;
+      background: #0b0e13;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
+      font: inherit;
+      font-size: 12.5px;
+    }
+    table.metadata td textarea.field-input { min-height: 44px; resize: vertical; }
+    table.metadata tr.removed td { opacity: .45; text-decoration: line-through; }
+    table.metadata tr.removed td:last-child { opacity: 1; text-decoration: none; }
+    .add-field {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-top: 12px;
+    }
+    .add-field input.field-input { flex: 1 1 150px; width: auto; }
+    .add-field select.field-input { flex: 0 0 auto; width: auto; }
     .summary-line {
       display: flex;
       gap: 10px;
@@ -203,6 +232,7 @@
       <a class="brand" href="/">metascrub</a>
       <a class="navlink{% if request.url.path == '/' %} active{% endif %}" href="/"{% if request.url.path == '/' %} aria-current="page"{% endif %}>Scrub</a>
       <a class="navlink{% if request.url.path == '/extract' %} active{% endif %}" href="/extract"{% if request.url.path == '/extract' %} aria-current="page"{% endif %}>Extract</a>
+      <a class="navlink{% if request.url.path == '/write' %} active{% endif %}" href="/write"{% if request.url.path == '/write' %} aria-current="page"{% endif %}>Write</a>
     </nav>
     {% block content %}{% endblock %}
   </main>
