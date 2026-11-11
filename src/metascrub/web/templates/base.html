@@ -187,6 +187,7 @@
     }
     table.metadata td input.field-input,
     table.metadata td textarea.field-input,
+    table.metadata td select.field-input,
     .add-field input.field-input {
       width: 100%;
       min-width: 120px;
@@ -210,6 +211,37 @@
     }
     .add-field input.field-input { flex: 1 1 150px; width: auto; }
     .add-field select.field-input { flex: 0 0 auto; width: auto; }
+    .tag-type {
+      display: inline-block;
+      margin-left: 4px;
+      padding: 1px 5px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      font-size: 10.5px;
+      font-weight: 400;
+      white-space: nowrap;
+    }
+    .field-hint {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .readonly-fields {
+      margin-top: 14px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+    }
+    .readonly-fields summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .readonly-fields[open] summary { margin-bottom: 8px; }
+    .readonly-fields .meta-table-wrap { margin-top: 8px; }
     .summary-line {
       display: flex;
       gap: 10px;

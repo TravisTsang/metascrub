@@ -3,7 +3,7 @@
 {% block content %}
 <h1>Write metadata</h1>
 <p class="muted">
-  Drop an image to its edit metadata fields.
+  Drop an image to edit its metadata fields.
 </p>
 
 <div id="write-dropzone" class="dropzone" tabindex="0" role="button"
@@ -128,6 +128,44 @@
     return field.value;
   }
 
+  function isIntegerType(valueType) {
+    const type = valueType || "";
+    return type === "integer" || /^int(?:8|16|32|64)[su]$/.test(type);
+  }
+
+  function isNumericType(valueType) {
+    const type = valueType || "";
+    return isIntegerType(type) || /^(?:rational|float|double)/.test(type);
+  }
+
+  function choiceSelect(field) {
+    const select = document.createElement("select");
+    select.className = "field-input";
+    const current = field.value === null || field.value === undefined
+      ? ""
+      : String(field.value);
+    const seen = new Set();
+    for (const choice of field.choices || []) {
+      const value = String(choice.value);
+      if (seen.has(value)) continue;
+      seen.add(value);
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = choice.label && choice.label !== value
+        ? value + " - " + choice.label
+        : value;
+      select.appendChild(option);
+    }
+    if (current && !seen.has(current)) {
+      const option = document.createElement("option");
+      option.value = current;
+      option.textContent = current + " (current)";
+      select.appendChild(option);
+    }
+    select.value = current;
+    return select;
+  }
+
   function fieldInput(field) {
     if (field.binary) {
       const file = document.createElement("input");
@@ -152,11 +190,33 @@
       textarea.placeholder = "One value per line";
       return textarea;
     }
+    if (field.choices && field.choices.length) {
+      return choiceSelect(field);
+    }
+    if (isIntegerType(field.tag_type)) {
+      const number = document.createElement("input");
+      number.type = "number";
+      number.step = "1";
+      number.className = "field-input";
+      number.value = field.value || "";
+      return number;
+    }
+    if (isNumericType(field.tag_type)) {
+      const number = document.createElement("input");
+      number.type = "text";
+      number.inputMode = "decimal";
+      number.className = "field-input";
+      number.value = field.value || "";
+      number.placeholder = "e.g. 1/125 or 0.008";
+      return number;
+    }
     const text = document.createElement("input");
     text.type = "text";
     text.className = "field-input";
     text.value = field.value || "";
-    text.placeholder = "New value";
+    text.placeholder = /^(?:date|date-time|time)$/.test(field.tag_type || "")
+      ? "YYYY:MM:DD HH:MM:SS"
+      : "New value";
     return text;
   }
 
@@ -197,6 +257,14 @@
 
     row.appendChild(cell(field.group));
     const tagCell = cell(field.tag);
+    if (field.tag_type) {
+      tagCell.appendChild(document.createTextNode(" "));
+      const typeBadge = document.createElement("span");
+      typeBadge.className = "tag-type";
+      typeBadge.textContent = field.tag_type;
+      typeBadge.title = field.tag_description || field.value_hint || "";
+      tagCell.appendChild(typeBadge);
+    }
     if (field.is_pii) {
       tagCell.appendChild(document.createTextNode(" "));
       tagCell.appendChild(badge(field.category_label || field.category || "PII", "bad"));
@@ -207,6 +275,13 @@
     const control = fieldInput(field);
     const valueCell = document.createElement("td");
     valueCell.appendChild(control);
+    if (field.value_hint) {
+      const hint = document.createElement("div");
+      hint.className = "field-hint";
+      hint.textContent = field.value_hint;
+      hint.title = field.value_hint;
+      valueCell.appendChild(hint);
+    }
     row.appendChild(valueCell);
 
     const actionCell = document.createElement("td");
@@ -449,6 +524,43 @@
     }
   }
 
+  function renderReadonly(fields) {
+    const details = document.createElement("details");
+    details.className = "readonly-fields";
+    const summary = document.createElement("summary");
+    summary.textContent =
+      "Read-only fields (" + fields.length + ") - why they cannot be changed";
+    details.appendChild(summary);
+
+    const wrap = document.createElement("div");
+    wrap.className = "meta-table-wrap";
+    const table = document.createElement("table");
+    table.className = "metadata readonly-table";
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    for (const label of ["Group", "Tag", "Current value", "Why read-only"]) {
+      const th = document.createElement("th");
+      th.textContent = label;
+      headRow.appendChild(th);
+    }
+    head.appendChild(headRow);
+    table.appendChild(head);
+
+    const body = document.createElement("tbody");
+    for (const field of fields) {
+      const row = document.createElement("tr");
+      row.appendChild(cell(field.group));
+      row.appendChild(cell(field.tag));
+      row.appendChild(cell(displayValue(field), "value"));
+      row.appendChild(cell(field.readonly_reason || "Read-only.", "value"));
+      body.appendChild(row);
+    }
+    table.appendChild(body);
+    wrap.appendChild(table);
+    details.appendChild(wrap);
+    return details;
+  }
+
   function renderResult(result) {
     const card = document.createElement("div");
     card.className = "result";
@@ -511,9 +623,9 @@
       hint.className = "muted";
       hint.style.marginTop = "8px";
       hint.textContent =
-        "Read-only fields are hidden on this page. Open the Extract page to " +
-        "view them; to change a derived field, edit its source tag " +
-        "(for example Composite:GPSLatitude -> GPS:GPSLatitude).";
+        "Read-only fields are listed below and cannot be edited. To change a " +
+        "derived field, edit its source tag (for example " +
+        "Composite:GPSLatitude -> GPS:GPSLatitude).";
       side.appendChild(hint);
     }
 
@@ -573,6 +685,11 @@
     table.appendChild(body);
     wrap.appendChild(table);
     card.appendChild(wrap);
+
+    const readonlyFields = (result.fields || []).filter((field) => !field.writable);
+    if (readonlyFields.length) {
+      card.appendChild(renderReadonly(readonlyFields));
+    }
 
     if (!writable.length) {
       const empty = document.createElement("p");
